@@ -1,80 +1,45 @@
-// 后端API服务地址
-const API_URL = 'https://api.xuconghu.top';
+import type { StoredRobotAssessment } from '@/types';
 
-// 最大评估次数限制
-export const MAX_ASSESSMENT_COUNT = 5;
+// 后端API服务地址（构建时通过环境变量 NEXT_PUBLIC_API_URL 指定）
+// 本地测试默认连 http://localhost:8790（可通过 SSH 隧道转发到服务器）
+const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8790';
 
-// 机器人评估计数API服务
-export const RobotCountService = {
-  // 获取所有机器人的评估计数
-  async getRobotCounts(): Promise<Record<string, number>> {
+// 评估数据提交服务
+export const SubmissionService = {
+  // 提交一名被试的全部评估数据，成功返回 true
+  // submissionId 由前端生成，重试时保持不变，后端据此去重
+  async submit(submissionId: string, userName: string, assessments: StoredRobotAssessment[]): Promise<boolean> {
     try {
-      const response = await fetch(`${API_URL}/api/robot-counts`);
-      if (!response.ok) {
-        throw new Error('获取评估计数失败');
-      }
-      const data = await response.json();
-      return data.counts || {};
-    } catch (error) {
-      console.error('获取机器人评估计数失败:', error);
-      return {};
-    }
-  },
-
-  // 获取所有机器人的剩余评估次数
-  async getRemainingCounts(): Promise<Record<string, number>> {
-    try {
-      const counts = await this.getRobotCounts();
-      const remainingCounts: Record<string, number> = {};
-      
-      // 计算每个机器人的剩余评估次数
-      Object.keys(counts).forEach(robotId => {
-        remainingCounts[robotId] = MAX_ASSESSMENT_COUNT - (counts[robotId] || 0);
-        if (remainingCounts[robotId] < 0) remainingCounts[robotId] = 0;
-      });
-      
-      return remainingCounts;
-    } catch (error) {
-      console.error('获取剩余评估次数失败:', error);
-      return {};
-    }
-  },
-
-  // 更新机器人评估计数
-  async updateRobotCounts(robotIds: string[]): Promise<boolean> {
-    try {
-      const response = await fetch(`${API_URL}/api/robot-counts`, {
+      const response = await fetch(`${API_URL}/api/submissions`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ robotIds }),
+        body: JSON.stringify({
+          submissionId,
+          userName,
+          assessments: assessments.map(a => ({
+            robotId: a.robotId,
+            robotName: a.robotName,
+            robotImageUrl: a.robotImageUrl,
+            timestamp: a.timestamp,
+            assessmentDuration: a.assessmentDuration,
+            overallScore: a.overallScore,
+            questions: a.shuffledQuestionsSnapshot,
+            sliderValues: a.sliderValues,
+          })),
+        }),
       });
-      
+
       if (!response.ok) {
-        throw new Error('更新评估计数失败');
+        throw new Error(`提交评估数据失败: ${response.status}`);
       }
-      
+
       const data = await response.json();
       return data.success || false;
     } catch (error) {
-      console.error('更新机器人评估计数失败:', error);
+      console.error('提交评估数据失败:', error);
       return false;
     }
-  },
-
-  // 获取可用的机器人ID（评估次数少于上限次的）
-  async getAvailableRobots(): Promise<string[]> {
-    try {
-      const response = await fetch(`${API_URL}/api/available-robots`);
-      if (!response.ok) {
-        throw new Error('获取可用机器人失败');
-      }
-      const data = await response.json();
-      return data.availableRobotIds || [];
-    } catch (error) {
-      console.error('获取可用机器人失败:', error);
-      return [];
-    }
   }
-}; 
+};

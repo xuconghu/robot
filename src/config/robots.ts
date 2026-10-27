@@ -4,59 +4,21 @@ export interface RobotImage {
   name: string;
 }
 
-import { RobotCountService, MAX_ASSESSMENT_COUNT } from '@/lib/api-service';
-
 // ============================================================
 // 配置区域：可以根据需要修改这些配置
 // ============================================================
 
 // 每次评估需要的机器人数量
-export const ROBOTS_PER_ASSESSMENT = 5;
+export const ROBOTS_PER_ASSESSMENT = 2;
 
-// 每个机器人允许的最大评估次数，应与后端设置保持一致
-// 注意：此值在后端worker.js和前端api-service.ts中也定义了，修改时需要保持一致
-// export const MAX_ASSESSMENT_COUNT = 15; // 直接从api-service.ts导入
+// 参与评估的机器人ID列表，每个被试从中随机抽取 ROBOTS_PER_ASSESSMENT 个（不重复，顺序随机）
+// ID与图片的对应关系见下方 ALL_ROBOT_IMAGES
+const SELECTED_ROBOT_IDS = [
+  'robot125', 'robot036', 'robot028', 'robot204', 'robot082', 'robot169', 'robot075',
+  'robot034', 'robot098', 'robot046', 'robot090', 'robot241', 'robot067', 'robot246',
+  'robot234', 'robot115', 'robot197', 'robot095', 'robot151', 'robot078', 'robot014',
+];
 
-// 要保留的机器人ID列表
-// 如需修改此列表，只需在此处添加或删除机器人ID
-  // 您可以根据需要更新此列表
-
-  const SELECTED_ROBOT_IDS = [
-    'robot001', 'robot002', 'robot003', 'robot004', 'robot005', 'robot006', 'robot007',
-    'robot008', 'robot009', 'robot010', 'robot011', 'robot012', 'robot014',
-    'robot015', 'robot016', 'robot017', 'robot019', 'robot020', 'robot023', 'robot024',
-    'robot025', 'robot026', 'robot027', 'robot028', 'robot029', 'robot031', 
-    'robot033', 'robot034', 'robot035', 'robot036', 'robot037', 'robot038', 'robot039',
-    'robot040', 'robot042', 'robot043', 'robot044', 'robot045', 'robot046', 'robot047',
-    'robot048', 'robot049', 'robot050', 'robot051', 'robot053', 'robot054', 'robot055',
-    'robot056', 'robot057', 'robot058', 'robot059', 'robot060', 'robot061', 'robot063',
-    'robot064', 'robot065', 'robot066', 'robot067', 'robot068', 'robot069', 'robot070',
-    'robot071', 'robot072', 'robot073', 'robot074', 'robot075', 'robot076', 'robot077',
-    'robot078', 'robot080', 'robot081', 'robot082', 'robot083', 'robot084', 'robot085',
-    'robot086', 'robot087', 'robot088', 'robot089', 'robot090', 'robot091', 'robot092',
-    'robot093', 'robot094', 'robot096', 'robot097', 'robot098', 'robot099', 'robot100',
-    'robot102', 'robot103', 'robot104', 'robot105', 'robot106', 'robot108',
-    'robot109', 'robot110', 'robot111', 'robot112', 'robot113', 'robot114', 'robot115',
-    'robot117', 'robot118', 'robot121', 'robot124', 'robot125',
-    'robot126', 'robot127', 'robot128', 'robot129', 'robot130', 'robot132', 'robot133',
-    'robot134', 'robot135', 'robot136', 'robot137', 'robot139', 'robot140', 'robot141',
-    'robot142', 'robot143', 'robot144', 'robot145', 'robot146', 'robot147', 'robot148',
-    'robot149', 'robot151', 'robot152', 'robot153', 'robot154', 'robot156',
-    'robot157', 'robot158', 'robot159', 'robot161', 'robot162', 'robot164', 'robot165',
-    'robot166', 'robot167', 'robot168', 'robot169', 'robot170', 'robot171', 'robot172',
-    'robot173', 'robot174', 'robot175', 'robot176', 'robot177', 'robot178', 'robot179',
-    'robot180', 'robot181', 'robot182', 'robot183', 'robot184', 'robot185', 'robot186',
-    'robot187', 'robot188', 'robot189', 'robot190', 'robot191', 'robot192', 'robot193',
-    'robot194', 'robot196', 'robot197', 'robot198', 'robot200', 'robot201', 'robot203',
-    'robot204', 'robot205', 'robot206', 'robot207', 'robot208', 'robot209', 'robot210',
-    'robot211', 'robot212', 'robot213', 'robot214', 'robot215', 'robot216', 'robot217',
-    'robot218', 'robot220', 'robot221', 'robot222', 'robot223', 'robot224', 'robot225',
-    'robot226', 'robot227', 'robot228', 'robot229', 'robot230', 'robot231', 'robot232',
-    'robot233', 'robot234', 'robot235', 'robot236', 'robot237', 'robot238', 'robot239',
-    'robot240', 'robot241', 'robot242', 'robot244', 'robot245', 'robot246', 'robot247',
-    'robot248', 'robot249', 'robot250', 'robot251'
-  ];
- 
 
 // ============================================================
 // 以下内容通常不需要修改
@@ -318,67 +280,20 @@ const ALL_ROBOT_IMAGES: RobotImage[] = [
 ];
 
 // 从所有机器人中过滤出指定ID的机器人
-export const ROBOT_IMAGES: RobotImage[] = ALL_ROBOT_IMAGES.filter(robot => 
+export const ROBOT_IMAGES: RobotImage[] = ALL_ROBOT_IMAGES.filter(robot =>
   SELECTED_ROBOT_IDS.includes(robot.id)
 );
 
-// 随机选择指定数量的机器人，从所有未达到评估上限的机器人中完全随机抽取
-export async function getRandomRobotsWithCounts(count: number = ROBOTS_PER_ASSESSMENT): Promise<RobotImage[]> {
-  try {
-    // 获取所有机器人的评估次数
-    const robotCounts = await RobotCountService.getRobotCounts();
-    
-    // 所有选定的机器人列表
-    const allSelectedRobots = [...ROBOT_IMAGES];
-    
-    // 过滤出所有评估次数低于上限的机器人
-    // 如果一个机器人从未被评估过，在robotCounts中就不存在记录，应该被包含在可选列表中
-    const availableRobots = allSelectedRobots.filter(robot => 
-      !robotCounts[robot.id] || robotCounts[robot.id] < MAX_ASSESSMENT_COUNT
-    );
-    
-    // 如果没有可用机器人，使用所有机器人
-    if (availableRobots.length === 0) {
-      console.warn('没有可用的机器人，将使用全部机器人池');
-      return getRandomRobots(count);
-    }
-    
-    // 确保不要尝试选择比可用机器人更多的数量
-    const selectCount = Math.min(count, availableRobots.length);
-    
-    // 复制数组防止修改原数组
-    const shuffled = [...availableRobots];
-    
-    // Fisher-Yates 随机算法
-    for (let i = shuffled.length - 1; i > 0; i--) {
-      const j = Math.floor(Math.random() * (i + 1));
-      [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
-    }
-    
-    // 返回前selectCount个元素
-    return shuffled.slice(0, selectCount);
-    
-  } catch (error) {
-    console.error('获取随机机器人失败，使用本地随机选择:', error);
-    // 发生错误时回退到原始的随机选择
-    return getRandomRobots(count);
-  }
-}
-
-// 保留原始的同步随机选择函数，作为备选
+// 随机抽取指定数量的机器人（不重复，顺序随机）
 export function getRandomRobots(count: number = ROBOTS_PER_ASSESSMENT): RobotImage[] {
-  // 确保不要尝试选择比可用机器人更多的数量
-  const selectCount = Math.min(count, ROBOT_IMAGES.length);
-  
   // 复制数组防止修改原数组
   const shuffled = [...ROBOT_IMAGES];
-  
+
   // Fisher-Yates 随机算法
   for (let i = shuffled.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1));
     [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
   }
-  
-  // 返回前selectCount个元素
-  return shuffled.slice(0, selectCount);
+
+  return shuffled.slice(0, Math.min(count, shuffled.length));
 }

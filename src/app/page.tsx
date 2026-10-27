@@ -3,11 +3,11 @@
 import { useState, useEffect, useRef } from 'react';
 import { RobotDisplay } from '@/components/image-upload-area';
 import { AssessmentPanel } from '@/components/assessment-panel';
-import { FeaturesPanel } from '@/components/features-panel';
 import { ASSESSMENT_QUESTIONS as ALL_QUESTIONS, INITIAL_SLIDER_VALUE } from '@/config/questions';
-import { ROBOT_FEATURES } from '@/config/features';
-import { getRandomRobots, getRandomRobotsWithCounts, ROBOTS_PER_ASSESSMENT } from '../config/robots';
-import type { AssessmentQuestion, StoredRobotAssessment, RobotImage, AssessmentSession, RobotFeature } from '@/types';
+import { getRandomRobots } from '../config/robots';
+import { RATING_SCALES, RATING_ITEM_COUNT, ratingScalesToQuestions } from '@/config/rating-scales';
+import { SubmissionService } from '@/lib/api-service';
+import type { AssessmentQuestion, StoredRobotAssessment, AssessmentSession } from '@/types';
 import { Bot, Save, Download, ChevronRight, Upload, ExternalLink, User, Brain, Award, Book, AlertTriangle, Info, Braces, PencilRuler, Clipboard, Activity, BrainCircuit } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription, CardFooter } from '@/components/ui/card';
@@ -20,7 +20,6 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Separator } from '@/components/ui/separator';
 import MetaData from '@/components/meta-data';
 import confetti from 'canvas-confetti';
-import { RobotCountService, MAX_ASSESSMENT_COUNT } from '@/lib/api-service';import { ROBOT_IMAGES } from '@/config/robots';
 
 // Helper function to shuffle an array (Fisher-Yates shuffle)
 const shuffleArray = <T,>(array: T[]): T[] => {
@@ -32,19 +31,19 @@ const shuffleArray = <T,>(array: T[]): T[] => {
   return newArray;
 };
 
+// 生成本次提交的唯一ID，重试提交时保持不变，后端据此去重
+const generateSubmissionId = (): string => {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  return `${Date.now()}-${Math.random().toString(36).slice(2, 12)}`;
+};
+
 const calculateOverallScore = (values: number[]): number => {
   if (!values || values.length === 0) return 0;
   const sum = values.reduce((acc, val) => acc + val, 0);
   return Math.round(sum / values.length);
 };
-
-function getRandomRobotsWrapper(count: number = ROBOTS_PER_ASSESSMENT): Promise<RobotImage[]> {
-  // 这个函数返回一个Promise，但不在模块级别直接调用fetch
-  return getRandomRobotsWithCounts(count).catch((error: unknown) => {
-    console.error('获取随机机器人失败，使用备选方法:', error);
-    return getRandomRobots(count);
-  });
-}
 
 export default function RobotVisionaryPage() {
   // 用户信息状态
@@ -55,13 +54,7 @@ export default function RobotVisionaryPage() {
     major: ''
   });
   const [showUserForm, setShowUserForm] = useState(true);
-  
-  // 评估阶段的状态：user-form（用户表单） -> features（外观特征） -> questions（问卷评估）
-  const [assessmentStage, setAssessmentStage] = useState<'user-form' | 'features' | 'questions'>('user-form');
-  
-  // 特征评估状态
-  const [robotFeatures, setRobotFeatures] = useState<RobotFeature[]>([]);
-  
+
   const [shuffledQuestions, setShuffledQuestions] = useState<AssessmentQuestion[]>([]);
   const [sliderValues, setSliderValues] = useState<number[]>([]);
   const [session, setSession] = useState<AssessmentSession>({
@@ -71,8 +64,15 @@ export default function RobotVisionaryPage() {
   });
   const { toast } = useToast();
 
+  // 提交到服务器的状态
+  const submissionIdRef = useRef<string>('');
+  const [submitStatus, setSubmitStatus] = useState<'idle' | 'submitting' | 'success' | 'error'>('idle');
+
   // 添加一个状态来跟踪用户是否调整了滑块
   const [answeredQuestions, setAnsweredQuestions] = useState<boolean[]>([]);
+
+  // 五点量表（Godspeed、心智感知等）的作答，按 RATING_SCALES 中题目顺序排列（1-5，未作答为null）
+  const [ratingValues, setRatingValues] = useState<(number | null)[]>(() => Array(RATING_ITEM_COUNT).fill(null));
 
   // 添加一个状态来跟踪当前评估的机器人id，用于触发评估面板滚动
   const [currentAssessmentId, setCurrentAssessmentId] = useState<string>('');
@@ -131,11 +131,7 @@ export default function RobotVisionaryPage() {
 
     // 通过验证，隐藏表单并开始评估
     setShowUserForm(false);
-    setAssessmentStage('features');
-    
-    // 初始化特征列表
-    setRobotFeatures([...ROBOT_FEATURES]);
-    
+
     // 记录评估开始时间
     setStartTime(Date.now());
     
@@ -148,40 +144,25 @@ export default function RobotVisionaryPage() {
 
   // 初始化: 随机选择机器人和问题
   useEffect(() => {
-    const initializeRobots = async () => {
-      try {
-        // 使用包装函数而不是直接调用异步函数
-        const randomRobots = await getRandomRobotsWrapper(ROBOTS_PER_ASSESSMENT);
-        
-        // 随机排序问题
-        const shuffled = shuffleArray(ALL_QUESTIONS);
-        
-        setSession(prev => ({
-          ...prev,
-          selectedRobots: randomRobots,
-          currentRobotIndex: 0,
-          completedAssessments: []
-        }));
-        
-        setShuffledQuestions(shuffled);
-      } catch (error) {
-        console.error('初始化机器人失败:', error);
-        // 失败时使用本地随机
-        const fallbackRobots = getRandomRobots(ROBOTS_PER_ASSESSMENT);
-        
-        setSession(prev => ({
-          ...prev,
-          selectedRobots: fallbackRobots,
-          currentRobotIndex: 0,
-          completedAssessments: []
-        }));
-        
-        setShuffledQuestions(shuffleArray(ALL_QUESTIONS));
-      }
-    };
+    setSession(prev => ({
+      ...prev,
+      selectedRobots: getRandomRobots(),
+      currentRobotIndex: 0,
+      completedAssessments: []
+    }));
 
-    initializeRobots();
+    // 随机排序问题
+    setShuffledQuestions(shuffleArray(ALL_QUESTIONS));
+
+    submissionIdRef.current = generateSubmissionId();
   }, []);
+
+  // 将全部评估数据提交到服务器
+  const submitAssessments = async (assessments: StoredRobotAssessment[]) => {
+    setSubmitStatus('submitting');
+    const success = await SubmissionService.submit(submissionIdRef.current, userInfo.name, assessments);
+    setSubmitStatus(success ? 'success' : 'error');
+  };
 
   // 当问题加载后初始化滑块值
   useEffect(() => {
@@ -204,13 +185,14 @@ export default function RobotVisionaryPage() {
   const checkAllQuestionsAnswered = () => {
     if (answeredQuestions.length === 0) return false;
     
-    // 检查是否有任何问题尚未回答
-    const unansweredQuestions = answeredQuestions.filter(answered => !answered);
-    
-    if (unansweredQuestions.length > 0) {
+    // 检查是否有任何问题尚未回答（包括五点量表）
+    const numUnanswered = answeredQuestions.filter(answered => !answered).length
+      + ratingValues.filter(value => value === null).length;
+
+    if (numUnanswered > 0) {
       toast({
         title: "评估未完成",
-        description: `还有 ${unansweredQuestions.length} 道问题未评分，请完成所有问题后再继续。`,
+        description: `还有 ${numUnanswered} 道问题未评分，请完成所有问题后再继续。`,
         variant: "destructive",
         duration: 4000,
       });
@@ -225,17 +207,6 @@ export default function RobotVisionaryPage() {
     const minutes = Math.floor(seconds / 60);
     const remainingSeconds = seconds % 60;
     return `${minutes}分${remainingSeconds}秒`;
-  };
-
-  // 当特征评估完成时，进入问卷评估阶段
-  const handleFeaturesComplete = () => {
-    setAssessmentStage('questions');
-    
-    toast({
-      title: "特征评估完成",
-      description: "现在请回答关于机器人能力的问题",
-      duration: 3000,
-    });
   };
 
   // 五彩纸屑特效函数
@@ -277,64 +248,8 @@ export default function RobotVisionaryPage() {
     }, 500);
   };
 
-  // 检查并替换不可用的机器人
-  const checkAndReplaceUnavailableRobots = async (currentIndex: number, selectedRobots: RobotImage[]): Promise<RobotImage[]> => {
-    try {
-      // 获取当前所有机器人的评估次数
-      const robotCounts = await RobotCountService.getRobotCounts();
-      
-      // 检查从当前索引开始的剩余机器人
-      const updatedRobots = [...selectedRobots];
-      let needsReplacement = false;
-      
-      for (let i = currentIndex; i < updatedRobots.length; i++) {
-        const robot = updatedRobots[i];
-        const currentCount = robotCounts[robot.id] || 0;
-        
-        // 如果机器人已达到评估上限，需要替换
-        if (currentCount >= MAX_ASSESSMENT_COUNT) {
-          console.log(`机器人 ${robot.id} 已达到评估上限 (${currentCount}/${MAX_ASSESSMENT_COUNT})，正在寻找替代...`);
-          
-          // 获取所有可用的机器人
-          const availableRobots = ROBOT_IMAGES.filter(availableRobot => 
-            !robotCounts[availableRobot.id] || robotCounts[availableRobot.id] < MAX_ASSESSMENT_COUNT
-          );
-          
-          // 排除已经在当前选择列表中的机器人
-          const availableReplacements = availableRobots.filter(availableRobot =>
-            !updatedRobots.some(selectedRobot => selectedRobot.id === availableRobot.id)
-          );
-          
-          if (availableReplacements.length > 0) {
-            // 随机选择一个替代机器人
-            const randomIndex = Math.floor(Math.random() * availableReplacements.length);
-            const replacementRobot = availableReplacements[randomIndex];
-            updatedRobots[i] = replacementRobot;
-            needsReplacement = true;
-            console.log(`已将机器人 ${robot.id} 替换为 ${replacementRobot.id}`);
-          } else {
-            console.warn(`没有可用的替代机器人来替换 ${robot.id}`);
-          }
-        }
-      }
-      
-      if (needsReplacement) {
-        toast({
-          title: "机器人已更新",
-          description: "部分机器人已达到评估上限，已自动替换为可用机器人",
-          duration: 4000,
-        });
-      }
-      
-      return updatedRobots;
-    } catch (error) {
-      console.error('检查机器人可用性时出错:', error);
-      return selectedRobots; // 出错时返回原列表
-    }
-  };
-
   // 保存当前机器人评估并进入下一个
-  const handleSaveAndNext = async () => {
+  const handleSaveAndNext = () => {
     if (!currentRobot || shuffledQuestions.length === 0 || sliderValues.length !== shuffledQuestions.length) {
       toast({
         title: "错误",
@@ -353,14 +268,16 @@ export default function RobotVisionaryPage() {
     // 计算评估耗时（秒）
     const assessmentDuration = startTime ? Math.round((Date.now() - startTime) / 1000) : 0;
 
+    // 综合评分只统计0-100的潜能题，不含五点量表
     const overallScore = calculateOverallScore(sliderValues);
     const currentAssessment: StoredRobotAssessment = {
       robotId: currentRobot.id,
       robotName: currentRobot.name,
       robotImageUrl: currentRobot.filename,
       timestamp: new Date().toISOString(),
-      sliderValues: [...sliderValues],
-      shuffledQuestionsSnapshot: [...shuffledQuestions],
+      // 五点量表作为额外题目接在潜能题之后，评分为1-5
+      sliderValues: [...sliderValues, ...ratingValues.map(value => value ?? 0)],
+      shuffledQuestionsSnapshot: [...shuffledQuestions, ...ratingScalesToQuestions()],
       overallScore,
       // 添加用户信息到评估数据
       userName: userInfo.name,
@@ -368,51 +285,32 @@ export default function RobotVisionaryPage() {
       userGender: userInfo.gender,
       userMajor: userInfo.major,
       // 添加评估耗时
-      assessmentDuration,
-      // 添加特征评估数据
-      features: [...robotFeatures]
+      assessmentDuration
     };
 
-    const nextRobotIndex = session.currentRobotIndex + 1;
-
-    // 更新后端机器人评估计数
-    try {
-      const success = await RobotCountService.updateRobotCounts([currentRobot.id]);
-      if (success) {
-        console.log(`已更新机器人 ${currentRobot.id} 的评估计数`);
-      } else {
-        console.warn(`无法更新机器人 ${currentRobot.id} 的评估计数`);
-      }
-    } catch (error) {
-      console.error(`更新机器人评估计数时出错:`, error);
-    }
-
-    // 检查并替换不可用的机器人（如果还有下一个机器人的话）
-    let updatedSelectedRobots = session.selectedRobots;
-    if (nextRobotIndex < session.selectedRobots.length) {
-      updatedSelectedRobots = await checkAndReplaceUnavailableRobots(nextRobotIndex, session.selectedRobots);
-    }
+    const completedAssessments = [...session.completedAssessments, currentAssessment];
 
     // 保存当前评估并更新会话状态
     setSession(prev => ({
       ...prev,
-      completedAssessments: [...prev.completedAssessments, currentAssessment],
-      currentRobotIndex: nextRobotIndex,
-      selectedRobots: updatedSelectedRobots
+      completedAssessments,
+      currentRobotIndex: prev.currentRobotIndex + 1
     }));
+
+    // 最后一个机器人评估完成后，提交全部数据到服务器
+    if (completedAssessments.length >= session.selectedRobots.length) {
+      submitAssessments(completedAssessments);
+    }
 
     // 重置滑块值为初始值
     setSliderValues(shuffledQuestions.map(() => INITIAL_SLIDER_VALUE));
-    
+
+    // 重置五点量表作答
+    setRatingValues(Array(RATING_ITEM_COUNT).fill(null));
+
     // 重置回答状态
     setAnsweredQuestions(shuffledQuestions.map(() => false));
-    
-    // 重置特征状态
-    setRobotFeatures([...ROBOT_FEATURES]);
-    
-    // 重置评估阶段
-    setAssessmentStage('features');
-    
+
     // 滚动到页面顶部
     window.scrollTo({
       top: 0,
@@ -484,25 +382,6 @@ export default function RobotVisionaryPage() {
   const completionPercentage = session.selectedRobots.length > 0
     ? Math.round((session.completedAssessments.length / session.selectedRobots.length) * 100)
     : 0;
-
-  const [remainingCounts, setRemainingCounts] = useState<Record<string, number>>({});
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    const loadData = async () => {
-      setLoading(true);
-      try {
-        const data = await RobotCountService.getRemainingCounts();
-        setRemainingCounts(data);
-      } catch (error) {
-        console.error('加载数据失败', error);
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    loadData();
-  }, []);
 
   return (
     <>
@@ -595,7 +474,7 @@ export default function RobotVisionaryPage() {
                           <div>
                             <h3 className="text-lg font-semibold text-foreground">评估流程</h3>
                             <p className="text-base text-muted-foreground mt-1">
-                              您将评估5个随机选择的机器人形象，每个机器人需要先对其外观进行评估，然后再回答12个关于其各方面潜能的问题。请确保每个问题都经过认真思考后再作答。
+                              您将评估{session.selectedRobots.length}个随机选择的机器人形象，每个机器人需要回答一系列关于其各方面潜能的问题。请确保每个问题都经过认真思考后再作答。
                             </p>
                           </div>
                         </div>
@@ -616,7 +495,7 @@ export default function RobotVisionaryPage() {
                           <div className="flex items-start">
                             <AlertTriangle className="h-5 w-5 text-primary mt-0.5 mr-2 flex-shrink-0" />
                             <p className="text-base text-muted-foreground">
-                              <strong>重要提示：</strong> 评估过程中请确保对每个问题都进行评分，未完成所有问题将无法进入下一个机器人的评估。完成所有机器人评估后，请务必导出并提交您的评估数据。
+                              <strong>重要提示：</strong> 评估过程中请确保对每个问题都进行评分，未完成所有问题将无法进入下一个机器人的评估。完成所有机器人评估后，数据会自动提交，请在看到"数据已成功提交"后再关闭页面。
                             </p>
                           </div>
                         </div>
@@ -636,8 +515,8 @@ export default function RobotVisionaryPage() {
                   totalRobots={session.selectedRobots.length}
                 />
                 
-                {/* 只在问卷评估阶段显示操作控制面板 */}
-                {!showUserForm && !isAllCompleted && assessmentStage === 'questions' && (
+                {/* 操作控制面板 */}
+                {!showUserForm && !isAllCompleted && (
                   <Card className="shadow-lg rounded-lg">
                     <CardHeader className="bg-gradient-to-r from-primary/10 to-card-foreground/5 py-3">
                       <div className="flex items-center">
@@ -678,17 +557,14 @@ export default function RobotVisionaryPage() {
               </div>
             )}
             
-            {assessmentStage === 'features' ? (
-              <FeaturesPanel
-                features={robotFeatures}
-                onFeaturesChange={setRobotFeatures}
-                onComplete={handleFeaturesComplete}
-              />
-            ) : shuffledQuestions.length > 0 && sliderValues.length === shuffledQuestions.length ? (
+            {shuffledQuestions.length > 0 && sliderValues.length === shuffledQuestions.length ? (
               <AssessmentPanel
                 questions={shuffledQuestions}
                 sliderValues={sliderValues}
                 onSliderValuesChange={setSliderValues}
+                ratingScales={RATING_SCALES}
+                ratingValues={ratingValues}
+                onRatingValuesChange={setRatingValues}
                 robotsAssessedCount={session.completedAssessments.length}
                 totalRobotsToAssess={session.selectedRobots.length}
                 isAssessmentActive={!!currentRobot}
@@ -721,67 +597,45 @@ export default function RobotVisionaryPage() {
                 <Bot className="mx-auto h-16 w-16 text-accent mb-4" />
                 <h2 className="text-2xl font-bold mb-2">感谢您的参与！</h2>
                 <p className="text-muted-foreground">
-                  您的评估对我们的研究非常有价值。请按照以下步骤完成数据提交。
+                  您的评估对我们的研究非常有价值。
                 </p>
               </div>
-              
-              <div className="rounded-lg border bg-card text-card-foreground p-4">
-                <h3 className="text-lg font-semibold mb-2 flex items-center">
-                  <span className="inline-flex items-center justify-center w-6 h-6 mr-2 rounded-full bg-primary text-primary-foreground text-sm font-medium">1</span>
-                  导出评估数据
-                </h3>
-                <p className="text-sm text-muted-foreground mb-4">
-                  首先，您需要下载包含您评估结果的CSV文件。
-                </p>
-                <Button 
-                  onClick={handleFinishAndExport} 
-                  className="w-full py-5 text-base"
-                >
-                  <Download className="mr-2 h-5 w-5" /> 导出评估数据 (CSV)
-                </Button>
-              </div>
-              
-              <div className="rounded-lg border bg-card text-card-foreground p-4">
-                <h3 className="text-lg font-semibold mb-2 flex items-center">
-                  <span className="inline-flex items-center justify-center w-6 h-6 mr-2 rounded-full bg-primary text-primary-foreground text-sm font-medium">2</span>
-                  上传CSV文件到WPS表单
-                </h3>
-                <p className="text-sm text-muted-foreground mb-4">
-                  请勿急于退出，将下载的CSV文件上传到以下WPS表单链接：
-                </p>
-                <a 
-                  href="https://f.wps.cn/g/jvdOLD6O/" 
-                  target="_blank" 
-                  rel="noopener noreferrer" 
-                  className="flex items-center justify-center py-5 px-4 w-full bg-accent text-accent-foreground hover:bg-accent/90 rounded-md font-medium text-base"
-                >
-                  <Upload className="mr-2 h-5 w-5" /> 前往WPS表单上传数据
-                  <ExternalLink className="ml-2 h-4 w-4" />
-                </a>
-                <p className="mt-3 text-xs text-muted-foreground">
-                  表单名称：【WPS表单】邀你填写「数据采集」
-                </p>
-              </div>
-              
-              <div className="rounded-lg border bg-card text-card-foreground/80 p-4">
-                <div className="flex items-start">
-                  <div className="flex-shrink-0 pt-0.5">
-                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="h-5 w-5 text-primary">
-                      <circle cx="12" cy="12" r="10" />
-                      <path d="M12 8v4" />
-                      <path d="M12 16h.01" />
-                    </svg>
-                  </div>
-                  <div className="ml-3">
-                    <h3 className="text-sm font-medium">重要提示</h3>
-                    <div className="mt-1 text-xs text-muted-foreground">
-                      <p>
-                        上传CSV文件是本次评估的最后一步，对于研究数据收集至关重要。请确保完成此步骤。
-                      </p>
-                    </div>
-                  </div>
+
+              {submitStatus === 'success' ? (
+                <div className="rounded-lg border border-green-200 dark:border-green-800 bg-green-50 dark:bg-green-950/30 p-4 text-center">
+                  <p className="text-base font-medium text-green-800 dark:text-green-400">
+                    数据已成功提交，您现在可以关闭本页面。
+                  </p>
                 </div>
-              </div>
+              ) : submitStatus === 'error' ? (
+                <div className="rounded-lg border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/30 p-4 space-y-4">
+                  <div className="flex items-start">
+                    <AlertTriangle className="h-5 w-5 text-amber-600 dark:text-amber-500 mt-0.5 mr-2 flex-shrink-0" />
+                    <p className="text-sm text-amber-800 dark:text-amber-400">
+                      数据提交失败，可能是网络问题。请<strong>不要关闭本页面</strong>，点击下方按钮重新提交。如果多次失败，请导出CSV文件并发送给研究人员。
+                    </p>
+                  </div>
+                  <Button
+                    onClick={() => submitAssessments(session.completedAssessments)}
+                    className="w-full py-5 text-base"
+                  >
+                    <Upload className="mr-2 h-5 w-5" /> 重新提交
+                  </Button>
+                  <Button
+                    onClick={handleFinishAndExport}
+                    variant="outline"
+                    className="w-full py-5 text-base"
+                  >
+                    <Download className="mr-2 h-5 w-5" /> 导出评估数据 (CSV)
+                  </Button>
+                </div>
+              ) : (
+                <div className="rounded-lg border bg-card p-4 text-center">
+                  <p className="text-base text-muted-foreground">
+                    正在提交数据，请勿关闭页面……
+                  </p>
+                </div>
+              )}
             </CardContent>
           </Card>
         )}
